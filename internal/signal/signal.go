@@ -17,4 +17,5 @@ type Message struct {
 	ClientIP   string  `json:"client_ip,omitempty"`
 	ClientPort int     `json:"client_port,omitempty"`
 	Subdomain  string  `json:"subdomain,omitempty"`
+	PunchPort  int     `json:"punch_port,omitempty"`
 }

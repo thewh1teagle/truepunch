@@ -28,9 +28,10 @@ var upgrader = websocket.Upgrader{
 }
 
 type tunnel struct {
-	ws       *websocket.Conn
-	publicIP string
-	mu       sync.Mutex
+	ws        *websocket.Conn
+	publicIP  string
+	punchPort int
+	mu        sync.Mutex
 }
 
 type relay struct {
@@ -137,7 +138,7 @@ func (r *relay) handleWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	t := &tunnel{ws: conn, publicIP: msg.PublicIP}
+	t := &tunnel{ws: conn, publicIP: msg.PublicIP, punchPort: msg.PunchPort}
 	r.mu.Lock()
 	r.tunnels[msg.TunnelName] = t
 	r.mu.Unlock()
@@ -225,8 +226,8 @@ func (r *relay) handleTunnel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// 302 redirect to the unique subdomain
-	redirectURL := fmt.Sprintf("http://%s.%s%s", fullSub, r.domain, req.URL.Path)
+	// 302 redirect to the unique subdomain on the punch port
+	redirectURL := fmt.Sprintf("http://%s.%s:%d/", fullSub, r.domain, t.punchPort)
 	log.Printf("redirecting Client B to %s", redirectURL)
 	http.Redirect(w, req, redirectURL, http.StatusFound)
 }

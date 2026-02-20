@@ -62,6 +62,7 @@ func main() {
 				Type:       sig.MsgRegister,
 				TunnelName: tunnelName,
 				PublicIP:   publicIP,
+				PunchPort:  punchPort,
 			})
 			if err != nil {
 				return fmt.Errorf("register: %w", err)
