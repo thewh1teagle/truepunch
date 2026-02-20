@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -87,7 +88,15 @@ func main() {
 				srv.Close()
 			}()
 
-			log.Printf("relay listening on %s", addr)
+			// Get public IP for convenience
+			if resp, err := http.Get("https://ifconfig.me"); err == nil {
+				defer resp.Body.Close()
+				if b, err := io.ReadAll(resp.Body); err == nil {
+					log.Printf("relay listening on %s | public: http://%s:%d/health", addr, strings.TrimSpace(string(b)), port)
+				}
+			} else {
+				log.Printf("relay listening on %s", addr)
+			}
 			return srv.ListenAndServe()
 		},
 	}
