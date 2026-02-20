@@ -226,6 +226,18 @@ func (r *relay) handleTunnel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Wait for DNS to propagate before redirecting
+	fqdn := fullSub + "." + r.domain
+	log.Printf("waiting for DNS propagation: %s", fqdn)
+	for i := 0; i < 10; i++ {
+		ips, err := net.LookupHost(fqdn)
+		if err == nil && len(ips) > 0 {
+			log.Printf("DNS resolved: %s -> %v", fqdn, ips)
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	// 302 redirect to the unique subdomain on the punch port
 	redirectURL := fmt.Sprintf("http://%s.%s:%d/", fullSub, r.domain, t.punchPort)
 	log.Printf("redirecting Client B to %s", redirectURL)
