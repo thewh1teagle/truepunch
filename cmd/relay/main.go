@@ -91,7 +91,7 @@ func main() {
 			// the magic happens on the client's NAT when it sends
 			// crafted SIP/FTP through these ports
 			go startALGSink(5060, "SIP")
-			go startALGSink(21, "FTP")
+			go startALGSinkUDP(5060)
 
 			// Graceful shutdown
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -367,5 +367,49 @@ func extractHeader(msg, header string) string {
 		}
 	}
 	return ""
+}
+
+// startALGSinkUDP handles UDP SIP on port 5060.
+// Some routers only inspect SIP over UDP, not TCP.
+func startALGSinkUDP(port int) {
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		log.Printf("[alg] UDP resolve failed: %v", err)
+		return
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		log.Printf("[alg] UDP SIP failed to listen on :%d: %v", port, err)
+		return
+	}
+	log.Printf("[alg] SIP UDP sink listening on :%d", port)
+
+	buf := make([]byte, 4096)
+	for {
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			continue
+		}
+		data := string(buf[:n])
+		log.Printf("[alg] SIP UDP received %d bytes from %s:\n%s", n, remoteAddr, data)
+
+		// Build SIP 200 OK response
+		sipOK := "SIP/2.0 200 OK\r\n" +
+			extractHeader(data, "Via") +
+			extractHeader(data, "From") +
+			extractHeader(data, "To") +
+			extractHeader(data, "Call-ID") +
+			extractHeader(data, "CSeq") +
+			extractHeader(data, "Contact") +
+			"Expires: 7200\r\n" +
+			"Content-Length: 0\r\n\r\n"
+
+		_, err = conn.WriteToUDP([]byte(sipOK), remoteAddr)
+		if err != nil {
+			log.Printf("[alg] SIP UDP response failed: %v", err)
+		} else {
+			log.Printf("[alg] SIP UDP 200 OK sent to %s", remoteAddr)
+		}
+	}
 }
 
