@@ -89,11 +89,11 @@ func main() {
 			}()
 
 			// Get public IP for convenience
-			if resp, err := http.Get("https://ifconfig.me"); err == nil {
-				defer resp.Body.Close()
-				if b, err := io.ReadAll(resp.Body); err == nil {
-					log.Printf("relay listening on %s | public: http://%s:%d/health", addr, strings.TrimSpace(string(b)), port)
-				}
+			req, _ := http.NewRequest("GET", "https://api.ipify.org", nil)
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				b, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				log.Printf("relay listening on %s | public: http://%s:%d/health", addr, strings.TrimSpace(string(b)), port)
 			} else {
 				log.Printf("relay listening on %s", addr)
 			}
