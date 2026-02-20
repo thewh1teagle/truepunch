@@ -45,23 +45,34 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 	defer ln.Close()
 	log.Printf("[punch] listening on %s", localBind)
 
-	// Send outbound SYN (punch) using same local port
-	go func() {
-		dialer := net.Dialer{
-			LocalAddr: &net.TCPAddr{Port: localPort},
-			Timeout:   5 * time.Second,
-			Control:   reuseControl,
-		}
-		// We don't expect this to succeed — it's just to create NAT mapping
-		conn, err := dialer.DialContext(ctx, "tcp", remoteAddr)
-		if err != nil {
-			log.Printf("[punch] outbound SYN to %s (expected to fail): %v", remoteAddr, err)
-			return
-		}
-		// If it somehow connects, proxy it
-		log.Printf("[punch] outbound SYN to %s succeeded (rare)", remoteAddr)
-		go proxyConn(conn, localTarget)
-	}()
+	// Send outbound SYNs (punch) to create NAT mapping
+	// Punch to multiple ports to increase chance of NAT mapping match
+	remoteIP := remoteAddr
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		remoteIP = host
+	}
+	punchTargets := []string{
+		net.JoinHostPort(remoteIP, "80"),
+		net.JoinHostPort(remoteIP, "443"),
+		remoteAddr,
+	}
+	for _, target := range punchTargets {
+		target := target
+		go func() {
+			dialer := net.Dialer{
+				LocalAddr: &net.TCPAddr{Port: localPort},
+				Timeout:   3 * time.Second,
+				Control:   reuseControl,
+			}
+			conn, err := dialer.DialContext(ctx, "tcp", target)
+			if err != nil {
+				log.Printf("[punch] SYN to %s (expected): %v", target, err)
+				return
+			}
+			log.Printf("[punch] SYN to %s succeeded", target)
+			go proxyConn(conn, localTarget)
+		}()
+	}
 
 	// Accept inbound connection from Client B
 	acceptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

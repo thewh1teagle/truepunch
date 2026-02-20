@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
@@ -203,12 +204,11 @@ func (r *relay) handleTunnel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Schedule cleanup
+	// Clean up DNS record after 60 seconds
 	go func() {
-		// Clean up after 60 seconds
-		ctx := context.Background()
-		<-req.Context().Done()
-		r.dns.DeleteRecord(ctx, fullSub)
+		time.Sleep(60 * time.Second)
+		r.dns.DeleteRecord(context.Background(), fullSub)
+		log.Printf("cleaned up DNS record: %s", fullSub)
 	}()
 
 	// Signal Client A to punch
