@@ -93,7 +93,9 @@ func main() {
 			if resp, err := http.DefaultClient.Do(req); err == nil {
 				b, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
-				log.Printf("relay listening on %s | public: http://%s:%d/health", addr, strings.TrimSpace(string(b)), port)
+				ip := strings.TrimSpace(string(b))
+				log.Printf("relay listening on %s | public: http://%s:%d/health", addr, ip, port)
+				log.Printf("connect client: ./client --relay ws://%s:%d --tunnel <name> --port <local-port>", ip, port)
 			} else {
 				log.Printf("relay listening on %s", addr)
 			}
