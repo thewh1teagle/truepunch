@@ -32,8 +32,10 @@ func ReuseControl(network, address string, c syscall.RawConn) error {
 // localPort is the port to bind for both punch and listen.
 // remoteAddr is Client B's IP:port.
 // localTarget is the local service to proxy to (e.g. "127.0.0.1:8080").
-func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) error {
+// Returns a done channel that is closed when the spray finishes.
+func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) (chan struct{}, error) {
 	localBind := fmt.Sprintf(":%d", localPort)
+	sprayDone := make(chan struct{})
 
 	// Start listener first with reuse
 	lc := net.ListenConfig{
@@ -41,9 +43,9 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 	}
 	ln, err := lc.Listen(ctx, "tcp4", localBind)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", localBind, err)
+		close(sprayDone)
+		return sprayDone, fmt.Errorf("listen on %s: %w", localBind, err)
 	}
-	defer ln.Close()
 	log.Printf("[punch] listening on %s", localBind)
 
 	// Extract remote IP
@@ -53,39 +55,42 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 	}
 
 	// SYN spray: send SYNs to all ephemeral ports on Client B's IP
-	// This creates NAT mappings so that when Client B connects from
-	// any ephemeral port, our NAT already has a mapping for it.
-	go synSpray(ctx, localPort, remoteIP)
-
-	// Accept inbound connection from Client B
-	acceptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	type result struct {
-		conn net.Conn
-		err  error
-	}
-	ch := make(chan result, 1)
 	go func() {
-		conn, err := ln.Accept()
-		ch <- result{conn, err}
+		synSpray(ctx, localPort, remoteIP)
+		close(sprayDone)
 	}()
 
-	select {
-	case <-acceptCtx.Done():
-		return fmt.Errorf("timeout waiting for inbound connection")
-	case r := <-ch:
-		if r.err != nil {
-			return fmt.Errorf("accept: %w", r.err)
-		}
-		log.Printf("[punch] accepted connection from %s", r.conn.RemoteAddr())
-		proxyConn(r.conn, localTarget)
-		return nil
-	}
-}
+	// Accept inbound connection from Client B — wait up to 60s
+	go func() {
+		defer ln.Close()
+		acceptCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
 
-// SprayDone is closed when the SYN spray finishes. Used for coordination.
-var SprayDone = make(chan struct{})
+		type result struct {
+			conn net.Conn
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			conn, err := ln.Accept()
+			ch <- result{conn, err}
+		}()
+
+		select {
+		case <-acceptCtx.Done():
+			log.Printf("punch: timeout waiting for inbound connection")
+		case r := <-ch:
+			if r.err != nil {
+				log.Printf("punch: accept error: %v", r.err)
+				return
+			}
+			log.Printf("[punch] accepted connection from %s", r.conn.RemoteAddr())
+			proxyConn(r.conn, localTarget)
+		}
+	}()
+
+	return sprayDone, nil
+}
 
 // synSpray sends SYN packets from localPort to all ephemeral ports on remoteIP.
 // Each SYN creates a NAT mapping: (localPort, remoteIP, destPort) -> allow inbound.
@@ -95,9 +100,6 @@ func synSpray(ctx context.Context, localPort int, remoteIP string) {
 		endPort     = 65535
 		concurrency = 4096 // high parallelism for speed
 	)
-
-	// Reset spray done channel
-	SprayDone = make(chan struct{})
 
 	var sent atomic.Int64
 	sem := make(chan struct{}, concurrency)
@@ -137,7 +139,6 @@ func synSpray(ctx context.Context, localPort int, remoteIP string) {
 
 	elapsed := time.Since(start).Round(time.Millisecond)
 	log.Printf("[spray] done: %d SYNs sent in %v", sent.Load(), elapsed)
-	close(SprayDone)
 }
 
 func proxyConn(clientConn net.Conn, localTarget string) {
