@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// reuseControl sets SO_REUSEADDR and SO_REUSEPORT on the socket.
-func reuseControl(network, address string, c syscall.RawConn) error {
+// ReuseControl sets SO_REUSEADDR and SO_REUSEPORT on the socket.
+func ReuseControl(network, address string, c syscall.RawConn) error {
 	var opErr error
 	err := c.Control(func(fd uintptr) {
 		opErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
@@ -36,7 +36,7 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 
 	// Start listener first with reuse
 	lc := net.ListenConfig{
-		Control: reuseControl,
+		Control: ReuseControl,
 	}
 	ln, err := lc.Listen(ctx, "tcp", localBind)
 	if err != nil {
@@ -62,7 +62,7 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 			dialer := net.Dialer{
 				LocalAddr: &net.TCPAddr{Port: localPort},
 				Timeout:   3 * time.Second,
-				Control:   reuseControl,
+				Control:   ReuseControl,
 			}
 			conn, err := dialer.DialContext(ctx, "tcp", target)
 			if err != nil {

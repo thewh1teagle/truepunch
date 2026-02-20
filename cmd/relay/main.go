@@ -75,6 +75,12 @@ func main() {
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte("ok\n"))
 			})
+			// Returns caller's IP:port as seen by the relay (for NAT mapping discovery)
+			mux.HandleFunc("/discover", func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				host, portStr, _ := net.SplitHostPort(req.RemoteAddr)
+				fmt.Fprintf(w, `{"ip":"%s","port":%s}`, host, portStr)
+			})
 
 			addr := fmt.Sprintf(":%d", port)
 			srv := &http.Server{Addr: addr, Handler: mux}

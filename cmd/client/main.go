@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
-	"strings"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,6 +52,37 @@ func main() {
 			}
 			log.Printf("public IP: %s", publicIP)
 
+			// Discover external mapped port by connecting to relay from punch port
+			relayHTTP := strings.Replace(relayURL, "ws://", "http://", 1)
+			relayHTTP = strings.Replace(relayHTTP, "wss://", "https://", 1)
+			extPort, keepAlive, err := discoverExternalPort(relayHTTP, punchPort)
+			if err != nil {
+				log.Printf("port discovery failed: %v (using internal port %d)", err, punchPort)
+				extPort = punchPort
+			} else {
+				log.Printf("NAT mapping: local :%d -> external :%d", punchPort, extPort)
+				// Keep the connection alive to maintain NAT mapping
+				defer keepAlive.Close()
+				go func() {
+					// Send keepalive every 20s to maintain NAT mapping
+					ticker := time.NewTicker(20 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							keepAlive.SetDeadline(time.Now().Add(5 * time.Second))
+							_, err := keepAlive.Write([]byte("k"))
+							if err != nil {
+								log.Printf("keepalive failed: %v", err)
+								return
+							}
+						}
+					}
+				}()
+			}
+
 			// Connect to relay
 			wsURL := fmt.Sprintf("%s/ws", relayURL)
 			log.Printf("connecting to relay: %s", wsURL)
@@ -57,12 +92,12 @@ func main() {
 			}
 			defer conn.Close()
 
-			// Register
+			// Register with external port
 			err = conn.WriteJSON(sig.Message{
 				Type:       sig.MsgRegister,
 				TunnelName: tunnelName,
 				PublicIP:   publicIP,
-				PunchPort:  punchPort,
+				PunchPort:  extPort,
 			})
 			if err != nil {
 				return fmt.Errorf("register: %w", err)
@@ -117,11 +152,66 @@ func main() {
 	root.Flags().IntVarP(&localPort, "port", "p", 8080, "local port to expose")
 	root.Flags().IntVar(&punchPort, "punch-port", 41234, "port used for TCP punch")
 
-
-
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// discoverExternalPort connects to the relay's /discover endpoint FROM the punch port
+// to learn the NAT's external mapping. Returns the external port and the keepalive connection.
+func discoverExternalPort(relayHTTP string, localPort int) (int, net.Conn, error) {
+	// Parse relay host:port
+	u := strings.TrimPrefix(relayHTTP, "http://")
+	u = strings.TrimPrefix(u, "https://")
+
+	// Dial TCP from the punch port with SO_REUSEPORT
+	dialer := net.Dialer{
+		LocalAddr: &net.TCPAddr{Port: localPort},
+		Timeout:   5 * time.Second,
+		Control:   punch.ReuseControl,
+	}
+	conn, err := dialer.Dial("tcp4", u)
+	if err != nil {
+		return 0, nil, fmt.Errorf("dial relay: %w", err)
+	}
+
+	// Send HTTP request manually on this connection
+	req := fmt.Sprintf("GET /discover HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n", u)
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, err = conn.Write([]byte(req))
+	if err != nil {
+		conn.Close()
+		return 0, nil, fmt.Errorf("write request: %w", err)
+	}
+
+	// Read response
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	if err != nil {
+		conn.Close()
+		return 0, nil, fmt.Errorf("read response: %w", err)
+	}
+
+	// Parse JSON body from HTTP response
+	resp := string(buf[:n])
+	bodyIdx := strings.Index(resp, "\r\n\r\n")
+	if bodyIdx == -1 {
+		conn.Close()
+		return 0, nil, fmt.Errorf("invalid http response")
+	}
+	body := resp[bodyIdx+4:]
+
+	var result struct {
+		IP   string `json:"ip"`
+		Port int    `json:"port"`
+	}
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		conn.Close()
+		return 0, nil, fmt.Errorf("parse response: %w (body: %s)", err, body)
+	}
+
+	conn.SetDeadline(time.Time{}) // clear deadline
+	return result.Port, conn, nil
 }
 
 func discoverPublicIP() (string, error) {
@@ -164,3 +254,7 @@ func discoverPublicIP() (string, error) {
 		return "", fmt.Errorf("stun timeout")
 	}
 }
+
+// suppress unused import
+var _ = http.Get
+var _ = io.EOF
