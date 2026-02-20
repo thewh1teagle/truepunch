@@ -27,30 +27,35 @@ go build -o relay ./cmd/relay/
 go build -o client ./cmd/client/
 ```
 
-### DNS
+### Cloudflare setup
 
-Point your domain to the relay VPS:
+Use any domain you already have on Cloudflare. You just need a subdomain for the tunnel.
 
-```
-A   tunnel.example.com    → <relay-vps-ip>
-```
+1. Go to your domain in Cloudflare dashboard
+2. **DNS** → **Records** → **Add record**
+   - Type: `A`
+   - Name: `tunnel` (or whatever you want)
+   - Content: your relay VPS IP
+   - Proxy: **OFF** (DNS only, gray cloud)
+   - Save
+3. **Copy your Zone ID** — it's on the domain overview page, right sidebar
+4. **Create an API token** at https://dash.cloudflare.com/profile/api-tokens
+   - Click **Create Token**
+   - Use the **"Edit zone DNS"** template (or custom: Zone → DNS → Edit)
+   - Zone Resources → Include → Specific zone → pick your domain
+   - Create, copy the token
 
-Subdomains are managed automatically via Cloudflare API.
+That gives you the `--domain`, `--zone-id`, and `--cf-token` values for the relay. Subdomains are created/deleted automatically by the relay via API.
 
 ### Run relay (on VPS)
 
 ```
-export CF_API_TOKEN=your-cloudflare-api-token
-export CF_ZONE_ID=your-zone-id
-
-./relay --domain tunnel.example.com --port 8080
+cp .env.example .env
+# edit .env with your values
+./relay --port 8080
 ```
 
-Or with flags:
-
-```
-./relay --domain tunnel.example.com --cf-token xxx --zone-id xxx --port 8080
-```
+The relay loads `CF_API_TOKEN`, `CF_ZONE_ID`, and `TUNNEL_DOMAIN` from `.env` automatically. You can also pass them as flags (`--cf-token`, `--zone-id`, `--domain`).
 
 ### Run client (on your machine behind NAT)
 
