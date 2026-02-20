@@ -75,7 +75,7 @@ The relay loads `CF_API_TOKEN`, `CF_ZONE_ID`, and `TUNNEL_DOMAIN` from `.env` au
 Terminal 1 — start the demo server:
 
 ```
-python3 scripts/demo-server.py
+uv run scripts/demo-server.py
 ```
 
 Terminal 2 — expose it through the tunnel:

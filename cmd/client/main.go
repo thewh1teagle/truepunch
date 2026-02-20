@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"os/signal"
 	"syscall"
 	"time"
@@ -67,12 +68,24 @@ func main() {
 			}
 			log.Printf("registered tunnel: %s", tunnelName)
 
+			// Extract relay host for the access URL
+			relayHost := strings.TrimPrefix(relayURL, "ws://")
+			relayHost = strings.TrimPrefix(relayHost, "wss://")
+			log.Printf("access from anywhere: curl -L http://%s/t/%s", relayHost, tunnelName)
+
+			// Close websocket when context is cancelled
+			go func() {
+				<-ctx.Done()
+				conn.Close()
+			}()
+
 			// Listen for punch signals
 			localTarget := fmt.Sprintf("127.0.0.1:%d", localPort)
 			for {
 				var msg sig.Message
 				if err := conn.ReadJSON(&msg); err != nil {
 					if ctx.Err() != nil {
+						log.Println("shutting down")
 						return nil
 					}
 					return fmt.Errorf("ws read: %w", err)
@@ -111,7 +124,8 @@ func main() {
 }
 
 func discoverPublicIP() (string, error) {
-	conn, err := stun.Dial("udp", "stun.l.google.com:19302")
+	// Force IPv4 by resolving to udp4
+	conn, err := stun.Dial("udp4", "stun.l.google.com:19302")
 	if err != nil {
 		return "", err
 	}
