@@ -97,7 +97,10 @@ func main() {
 	root.Flags().StringVar(&zoneID, "zone-id", os.Getenv("CF_ZONE_ID"), "Cloudflare zone ID")
 	root.Flags().StringVar(&domain, "domain", os.Getenv("TUNNEL_DOMAIN"), "base domain (e.g. tunnel.example.com)")
 
-	root.MarkFlagRequired("domain")
+	// Only require --domain if not set via .env
+	if os.Getenv("TUNNEL_DOMAIN") == "" {
+		root.MarkFlagRequired("domain")
+	}
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
