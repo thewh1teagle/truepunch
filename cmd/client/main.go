@@ -134,15 +134,19 @@ func main() {
 				remoteAddr := fmt.Sprintf("%s:%d", msg.ClientIP, msg.ClientPort)
 				log.Printf("punch signal: client=%s subdomain=%s", remoteAddr, msg.Subdomain)
 
-				// Perform punch in background
+				// Perform punch in background, signal ready after spray
 				go func(remote, target string) {
 					if err := punch.Punch(ctx, punchPort, remote, target); err != nil {
 						log.Printf("punch failed: %v", err)
 					}
 				}(remoteAddr, localTarget)
 
-				// Tell relay we're ready
-				conn.WriteJSON(sig.Message{Type: sig.MsgReady})
+				// Wait for spray to finish, then tell relay we're ready
+				go func() {
+					<-punch.SprayDone
+					log.Println("spray done, signaling relay")
+					conn.WriteJSON(sig.Message{Type: sig.MsgReady})
+				}()
 			}
 		},
 	}

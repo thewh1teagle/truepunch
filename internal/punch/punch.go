@@ -84,14 +84,20 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 	}
 }
 
+// SprayDone is closed when the SYN spray finishes. Used for coordination.
+var SprayDone = make(chan struct{})
+
 // synSpray sends SYN packets from localPort to all ephemeral ports on remoteIP.
 // Each SYN creates a NAT mapping: (localPort, remoteIP, destPort) -> allow inbound.
 func synSpray(ctx context.Context, localPort int, remoteIP string) {
 	const (
 		startPort   = 1024
 		endPort     = 65535
-		concurrency = 512 // parallel dials
+		concurrency = 4096 // high parallelism for speed
 	)
+
+	// Reset spray done channel
+	SprayDone = make(chan struct{})
 
 	var sent atomic.Int64
 	sem := make(chan struct{}, concurrency)
@@ -110,13 +116,14 @@ func synSpray(ctx context.Context, localPort int, remoteIP string) {
 
 			dialer := net.Dialer{
 				LocalAddr: &net.TCPAddr{Port: localPort},
-				Timeout:   500 * time.Millisecond,
-				Control:   ReuseControl,
+				// Short timeout — we only need the SYN to go out,
+				// don't care about the response
+				Timeout: 50 * time.Millisecond,
+				Control: ReuseControl,
 			}
 			target := fmt.Sprintf("%s:%d", remoteIP, p)
 			conn, err := dialer.DialContext(ctx, "tcp4", target)
 			if err == nil {
-				// Unlikely but possible — connection succeeded
 				conn.Close()
 			}
 			sent.Add(1)
@@ -128,7 +135,9 @@ func synSpray(ctx context.Context, localPort int, remoteIP string) {
 		sem <- struct{}{}
 	}
 
-	log.Printf("[spray] done: %d SYNs sent in %v", sent.Load(), time.Since(start).Round(time.Millisecond))
+	elapsed := time.Since(start).Round(time.Millisecond)
+	log.Printf("[spray] done: %d SYNs sent in %v", sent.Load(), elapsed)
+	close(SprayDone)
 }
 
 func proxyConn(clientConn net.Conn, localTarget string) {

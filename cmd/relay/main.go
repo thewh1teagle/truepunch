@@ -33,6 +33,7 @@ type tunnel struct {
 	publicIP  string
 	punchPort int
 	mu        sync.Mutex
+	ready     chan struct{} // closed when client signals spray is done
 }
 
 type relay struct {
@@ -145,7 +146,7 @@ func (r *relay) handleWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	t := &tunnel{ws: conn, publicIP: msg.PublicIP, punchPort: msg.PunchPort}
+	t := &tunnel{ws: conn, publicIP: msg.PublicIP, punchPort: msg.PunchPort, ready: make(chan struct{})}
 	r.mu.Lock()
 	r.tunnels[msg.TunnelName] = t
 	r.mu.Unlock()
@@ -166,7 +167,15 @@ func (r *relay) handleWS(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if m.Type == sig.MsgReady {
-			log.Printf("tunnel %s: client ready for punch", msg.TunnelName)
+			log.Printf("tunnel %s: spray done, client ready", msg.TunnelName)
+			// Signal ready — non-blocking in case multiple readys
+			select {
+			case <-t.ready:
+				// Already closed, make a new one for next punch
+				t.ready = make(chan struct{})
+			default:
+			}
+			close(t.ready)
 		}
 	}
 }
@@ -217,6 +226,9 @@ func (r *relay) handleTunnel(w http.ResponseWriter, req *http.Request) {
 		log.Printf("cleaned up DNS record: %s", fullSub)
 	}()
 
+	// Reset ready channel for this punch
+	t.ready = make(chan struct{})
+
 	// Signal Client A to punch
 	t.mu.Lock()
 	err = t.ws.WriteJSON(sig.Message{
@@ -232,7 +244,7 @@ func (r *relay) handleTunnel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Wait for DNS to propagate before redirecting
+	// Wait for DNS to propagate
 	fqdn := fullSub + "." + r.domain
 	log.Printf("waiting for DNS propagation: %s", fqdn)
 	for i := 0; i < 10; i++ {
@@ -242,6 +254,15 @@ func (r *relay) handleTunnel(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Wait for client to finish SYN spray (max 15s)
+	log.Printf("waiting for client spray to finish...")
+	select {
+	case <-t.ready:
+		log.Printf("client spray done, redirecting")
+	case <-time.After(15 * time.Second):
+		log.Printf("spray timeout, redirecting anyway")
 	}
 
 	// 302 redirect to the unique subdomain on the punch port
