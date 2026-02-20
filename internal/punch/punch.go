@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -27,9 +28,9 @@ func ReuseControl(network, address string, c syscall.RawConn) error {
 	return opErr
 }
 
-// Punch performs TCP hole punching and proxies the connection to localAddr.
+// Punch performs TCP hole punching via SYN spray and proxies the connection to localTarget.
 // localPort is the port to bind for both punch and listen.
-// remoteAddr is Client B's IP:port to punch toward.
+// remoteAddr is Client B's IP:port.
 // localTarget is the local service to proxy to (e.g. "127.0.0.1:8080").
 func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) error {
 	localBind := fmt.Sprintf(":%d", localPort)
@@ -38,41 +39,23 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 	lc := net.ListenConfig{
 		Control: ReuseControl,
 	}
-	ln, err := lc.Listen(ctx, "tcp", localBind)
+	ln, err := lc.Listen(ctx, "tcp4", localBind)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", localBind, err)
 	}
 	defer ln.Close()
 	log.Printf("[punch] listening on %s", localBind)
 
-	// Send outbound SYNs (punch) to create NAT mapping
-	// Punch to multiple ports to increase chance of NAT mapping match
+	// Extract remote IP
 	remoteIP := remoteAddr
 	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
 		remoteIP = host
 	}
-	punchTargets := []string{
-		net.JoinHostPort(remoteIP, "80"),
-		net.JoinHostPort(remoteIP, "443"),
-		remoteAddr,
-	}
-	for _, target := range punchTargets {
-		target := target
-		go func() {
-			dialer := net.Dialer{
-				LocalAddr: &net.TCPAddr{Port: localPort},
-				Timeout:   3 * time.Second,
-				Control:   ReuseControl,
-			}
-			conn, err := dialer.DialContext(ctx, "tcp", target)
-			if err != nil {
-				log.Printf("[punch] SYN to %s (expected): %v", target, err)
-				return
-			}
-			log.Printf("[punch] SYN to %s succeeded", target)
-			go proxyConn(conn, localTarget)
-		}()
-	}
+
+	// SYN spray: send SYNs to all ephemeral ports on Client B's IP
+	// This creates NAT mappings so that when Client B connects from
+	// any ephemeral port, our NAT already has a mapping for it.
+	go synSpray(ctx, localPort, remoteIP)
 
 	// Accept inbound connection from Client B
 	acceptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -99,6 +82,53 @@ func Punch(ctx context.Context, localPort int, remoteAddr, localTarget string) e
 		proxyConn(r.conn, localTarget)
 		return nil
 	}
+}
+
+// synSpray sends SYN packets from localPort to all ephemeral ports on remoteIP.
+// Each SYN creates a NAT mapping: (localPort, remoteIP, destPort) -> allow inbound.
+func synSpray(ctx context.Context, localPort int, remoteIP string) {
+	const (
+		startPort   = 1024
+		endPort     = 65535
+		concurrency = 512 // parallel dials
+	)
+
+	var sent atomic.Int64
+	sem := make(chan struct{}, concurrency)
+	start := time.Now()
+
+	log.Printf("[spray] starting SYN spray to %s ports %d-%d from :%d", remoteIP, startPort, endPort, localPort)
+
+	for port := startPort; port <= endPort; port++ {
+		if ctx.Err() != nil {
+			break
+		}
+
+		sem <- struct{}{}
+		go func(p int) {
+			defer func() { <-sem }()
+
+			dialer := net.Dialer{
+				LocalAddr: &net.TCPAddr{Port: localPort},
+				Timeout:   500 * time.Millisecond,
+				Control:   ReuseControl,
+			}
+			target := fmt.Sprintf("%s:%d", remoteIP, p)
+			conn, err := dialer.DialContext(ctx, "tcp4", target)
+			if err == nil {
+				// Unlikely but possible — connection succeeded
+				conn.Close()
+			}
+			sent.Add(1)
+		}(port)
+	}
+
+	// Wait for remaining goroutines
+	for i := 0; i < concurrency; i++ {
+		sem <- struct{}{}
+	}
+
+	log.Printf("[spray] done: %d SYNs sent in %v", sent.Load(), time.Since(start).Round(time.Millisecond))
 }
 
 func proxyConn(clientConn net.Conn, localTarget string) {
