@@ -86,6 +86,13 @@ func main() {
 			addr := fmt.Sprintf(":%d", port)
 			srv := &http.Server{Addr: addr, Handler: mux}
 
+			// Start ALG sink listeners (SIP on 5060, FTP on 21)
+			// These just accept connections and keep them alive —
+			// the magic happens on the client's NAT when it sends
+			// crafted SIP/FTP through these ports
+			go startALGSink(5060, "SIP")
+			go startALGSink(21, "FTP")
+
 			// Graceful shutdown
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -292,5 +299,36 @@ func randomSubdomain() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// startALGSink listens on a port and keeps connections alive.
+// The NAT's ALG inspects traffic on these ports (5060=SIP, 21=FTP)
+// and opens ports based on the protocol payloads.
+func startALGSink(port int, proto string) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		log.Printf("[alg] failed to listen on :%d (%s): %v", port, proto, err)
+		return
+	}
+	log.Printf("[alg] %s sink listening on :%d", proto, port)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			continue
+		}
+		log.Printf("[alg] %s connection from %s", proto, conn.RemoteAddr())
+		// Keep connection alive — read and discard
+		go func(c net.Conn) {
+			buf := make([]byte, 4096)
+			for {
+				n, err := c.Read(buf)
+				if err != nil {
+					c.Close()
+					return
+				}
+				log.Printf("[alg] %s received %d bytes from %s", proto, n, c.RemoteAddr())
+			}
+		}(conn)
+	}
 }
 

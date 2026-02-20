@@ -52,19 +52,46 @@ func main() {
 			}
 			log.Printf("public IP: %s", publicIP)
 
-			// Discover external mapped port by connecting to relay from punch port
+			// Extract relay host for ALG connections
 			relayHTTP := strings.Replace(relayURL, "ws://", "http://", 1)
 			relayHTTP = strings.Replace(relayHTTP, "wss://", "https://", 1)
+			relayHost := strings.TrimPrefix(relayHTTP, "http://")
+			relayHost = strings.TrimPrefix(relayHost, "https://")
+			relayIP := relayHost
+			if h, _, err := net.SplitHostPort(relayHost); err == nil {
+				relayIP = h
+			}
+
+			// Try NAT ALG exploitation to open the port
+			// SIP ALG (port 5060) — most common on home routers
+			sipAddr := net.JoinHostPort(relayIP, "5060")
+			sipConn, err := punch.ExploitSIPALG(sipAddr, publicIP, punchPort)
+			if err != nil {
+				log.Printf("SIP ALG failed: %v", err)
+			} else {
+				defer sipConn.Close()
+				log.Printf("SIP ALG connection established — port %d should be open", punchPort)
+			}
+
+			// FTP ALG (port 21) — fallback
+			ftpAddr := net.JoinHostPort(relayIP, "21")
+			ftpConn, err := punch.ExploitFTPALG(ftpAddr, publicIP, punchPort)
+			if err != nil {
+				log.Printf("FTP ALG failed: %v", err)
+			} else {
+				defer ftpConn.Close()
+				log.Printf("FTP ALG connection established — port %d should be open", punchPort)
+			}
+
+			// Also try port discovery for external mapping
 			extPort, keepAlive, err := discoverExternalPort(relayHTTP, punchPort)
 			if err != nil {
 				log.Printf("port discovery failed: %v (using internal port %d)", err, punchPort)
 				extPort = punchPort
 			} else {
 				log.Printf("NAT mapping: local :%d -> external :%d", punchPort, extPort)
-				// Keep the connection alive to maintain NAT mapping
 				defer keepAlive.Close()
 				go func() {
-					// Send keepalive every 20s to maintain NAT mapping
 					ticker := time.NewTicker(20 * time.Second)
 					defer ticker.Stop()
 					for {
@@ -104,9 +131,7 @@ func main() {
 			}
 			log.Printf("registered tunnel: %s", tunnelName)
 
-			// Extract relay host for the access URL
-			relayHost := strings.TrimPrefix(relayURL, "ws://")
-			relayHost = strings.TrimPrefix(relayHost, "wss://")
+			// Print access URL
 			log.Printf("access from anywhere: curl -L http://%s/t/%s", relayHost, tunnelName)
 
 			// Close websocket when context is cancelled
