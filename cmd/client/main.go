@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -30,6 +32,13 @@ func main() {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+
+			// Generate random tunnel name if not provided
+			if tunnelName == "" {
+				b := make([]byte, 4)
+				rand.Read(b)
+				tunnelName = hex.EncodeToString(b)
+			}
 
 			// Discover public IP via STUN
 			publicIP, err := discoverPublicIP()
@@ -94,7 +103,7 @@ func main() {
 	root.Flags().IntVarP(&localPort, "port", "p", 8080, "local port to expose")
 	root.Flags().IntVar(&punchPort, "punch-port", 41234, "port used for TCP punch")
 
-	root.MarkFlagRequired("tunnel")
+
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
