@@ -301,9 +301,9 @@ func randomSubdomain() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// startALGSink listens on a port and keeps connections alive.
-// The NAT's ALG inspects traffic on these ports (5060=SIP, 21=FTP)
-// and opens ports based on the protocol payloads.
+// startALGSink listens on a port and handles ALG protocol responses.
+// For SIP (5060): reads SIP REGISTER, responds with SIP 200 OK to trigger ALG port opening.
+// The NAT only opens the port after seeing the server's valid response.
 func startALGSink(port int, proto string) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -317,18 +317,55 @@ func startALGSink(port int, proto string) {
 			continue
 		}
 		log.Printf("[alg] %s connection from %s", proto, conn.RemoteAddr())
-		// Keep connection alive — read and discard
-		go func(c net.Conn) {
-			buf := make([]byte, 4096)
-			for {
-				n, err := c.Read(buf)
-				if err != nil {
-					c.Close()
-					return
-				}
-				log.Printf("[alg] %s received %d bytes from %s", proto, n, c.RemoteAddr())
-			}
-		}(conn)
+		go handleALGConn(conn, proto)
 	}
+}
+
+func handleALGConn(c net.Conn, proto string) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := c.Read(buf)
+		if err != nil {
+			c.Close()
+			return
+		}
+		data := string(buf[:n])
+		log.Printf("[alg] %s received %d bytes from %s:\n%s", proto, n, c.RemoteAddr(), data)
+
+		if proto == "SIP" {
+			// Extract Call-ID, From, To, CSeq from the request to build proper response
+			// The NAT ALG validates the response matches the request
+			sipOK := "SIP/2.0 200 OK\r\n" +
+				extractHeader(data, "Via") +
+				extractHeader(data, "From") +
+				extractHeader(data, "To") +
+				extractHeader(data, "Call-ID") +
+				extractHeader(data, "CSeq") +
+				extractHeader(data, "Contact") +
+				"Expires: 7200\r\n" +
+				"Content-Length: 0\r\n\r\n"
+
+			log.Printf("[alg] sending SIP 200 OK response to %s", c.RemoteAddr())
+			_, err = c.Write([]byte(sipOK))
+			if err != nil {
+				log.Printf("[alg] failed to send SIP response: %v", err)
+				c.Close()
+				return
+			}
+			log.Printf("[alg] SIP 200 OK sent — NAT should now open the port")
+		}
+	}
+}
+
+// extractHeader pulls a SIP header line from the message.
+func extractHeader(msg, header string) string {
+	lines := strings.Split(msg, "\r\n")
+	for _, line := range lines {
+		if strings.HasPrefix(strings.ToLower(line), strings.ToLower(header)+":") ||
+			strings.HasPrefix(strings.ToLower(line), strings.ToLower(header)+" :") {
+			return line + "\r\n"
+		}
+	}
+	return ""
 }
 

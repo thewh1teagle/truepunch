@@ -62,25 +62,27 @@ func main() {
 				relayIP = h
 			}
 
+			// Get internal/local IP for ALG exploit
+			// The NAT ALG validates Contact IP == internal source IP
+			internalIP, err := punch.GetInternalIP()
+			if err != nil {
+				log.Printf("failed to get internal IP: %v", err)
+				internalIP = "0.0.0.0"
+			}
+			log.Printf("internal IP: %s", internalIP)
+
 			// Try NAT ALG exploitation to open the port
 			// SIP ALG (port 5060) — most common on home routers
+			// The NAT inspects traffic on port 5060, sees SIP REGISTER with
+			// Contact header containing internal IP:port, rewrites to public IP,
+			// and opens the port after receiving valid SIP 200 OK from server
 			sipAddr := net.JoinHostPort(relayIP, "5060")
-			sipConn, err := punch.ExploitSIPALG(sipAddr, publicIP, punchPort)
+			sipConn, err := punch.ExploitSIPALG(sipAddr, internalIP, punchPort)
 			if err != nil {
 				log.Printf("SIP ALG failed: %v", err)
 			} else {
 				defer sipConn.Close()
-				log.Printf("SIP ALG connection established — port %d should be open", punchPort)
-			}
-
-			// FTP ALG (port 21) — fallback
-			ftpAddr := net.JoinHostPort(relayIP, "21")
-			ftpConn, err := punch.ExploitFTPALG(ftpAddr, publicIP, punchPort)
-			if err != nil {
-				log.Printf("FTP ALG failed: %v", err)
-			} else {
-				defer ftpConn.Close()
-				log.Printf("FTP ALG connection established — port %d should be open", punchPort)
+				log.Printf("SIP ALG succeeded — port %d should be open for inbound", punchPort)
 			}
 
 			// Also try port discovery for external mapping
