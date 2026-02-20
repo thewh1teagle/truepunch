@@ -55,6 +55,12 @@ cp .env.example .env
 ./relay --port 8080
 ```
 
+Verify it's reachable from your machine:
+
+```
+curl http://your-vps-ip:8080/health
+```
+
 The relay loads `CF_API_TOKEN`, `CF_ZONE_ID`, and `TUNNEL_DOMAIN` from `.env` automatically. You can also pass them as flags (`--cf-token`, `--zone-id`, `--domain`).
 
 ### Run client (on your machine behind NAT)
